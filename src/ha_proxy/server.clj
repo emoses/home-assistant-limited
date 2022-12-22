@@ -6,7 +6,9 @@
    [environ.core :refer [env]]
    [aleph.http :as http]
    [manifold.deferred :as d]
-   [ring.logger :as logger]))
+   [ring.logger :as logger]
+   [clojure.pprint :refer [pprint]]))
+
 
 (def proxy-target-base (env :proxy-target "hass.coopermoses.com"))
 (def proxy-target-port (env :proxy-target-port 443))
@@ -23,9 +25,18 @@
     (http/request updated)))
 
 (defn filter-for [user]
-  (fn [msg]
-    (println "filtering msg of type " (:type msg))
-    msg))
+  (fn
+    ([msg]
+     ;; outgoing from client
+     (case (:type msg)
+       "call_service" (and
+                       (= (:domain msg) "light")
+                       (= (get-in msg [:target :entity] "light.family_room_lights")))
+       true))
+    ([msg orig]
+     (if-not (= (:type orig) "get_panels")
+       msg
+       (update msg :result select-keys [:lovelace])))))
 
 (defn websocket-handler [request]
   (->

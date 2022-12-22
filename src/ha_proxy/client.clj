@@ -9,20 +9,18 @@
 
 (def api-bus (bus/event-bus))
 
+(defmulti handle-auth-message :type)
 
-
-(defmulti handle-message :type)
-
-(defmethod handle-message "auth_required" [msg]
+(defmethod handle-auth-message "auth_required" [msg]
   ::auth)
 
-(defmethod handle-message "auth_ok" [msg]
+(defmethod handle-auth-message "auth_ok" [msg]
   ::authok)
 
-(defmethod handle-message "auth_invalid" [msg]
+(defmethod handle-auth-message "auth_invalid" [msg]
   ::authfailed)
 
-(defmethod handle-message nil [msg]
+(defmethod handle-auth-message nil [msg]
   (println "Unexpected message with no type "msg)
   ::err)
 
@@ -30,11 +28,11 @@
   (d/let-flow [authreq (s/take! conn)]
     (if-not authreq
       (throw (ex-info "no auth message" {}))
-      (if-not (= (handle-message authreq) ::auth)
+      (if-not (= (handle-auth-message authreq) ::auth)
         (ex-info "Expected auth required" {})
         (d/let-flow [_ (s/put! conn {:type "auth" :access_token api-token})
                    authed (s/take! conn)
-                   res (handle-message authed)]
+                   res (handle-auth-message authed)]
           (case res
             ::authok true
             ::authfailed (throw (ex-info "Invalid auth" {}))
@@ -51,7 +49,7 @@
 
                conn (util/json-stream conn)]
               (if-not conn
-                (throw (Exception.))
+                (throw (Exception. "Unable to connect to server"))
                 (->
                  (d/let-flow [res (auth api-token conn)]
                              (s/consume #(bus/publish! api-bus "api" %) conn)
@@ -111,6 +109,55 @@
                   (s/put! client-stream {:type "auth_ok" :ha_version ha_version})
                   (s/put! client-stream {:type "auth_invalid" :message "Nope"})))))
 
+(defn incoming-client-callback [state out client-stream msg-filter]
+  (fn [msg]
+    (let [msgs (if-not (seq? msg) [msg] msg)]
+      (d/loop [[m & ms] msgs]
+        (if-not m
+          true
+          (if-not (msg-filter m)
+            (d/chain
+             ;;If the incoming message is filtered, put a failure
+             ;;message back on the client stream
+             (s/put! client-stream {:id (:id m)
+                                    :type "result"
+                                    :success false
+                                    :result nil})
+             (fn [res]
+               (if res
+                 (d/recur ms)
+                 false)))
+            (d/chain
+             (s/put! out
+                     (if-let [id (:id m)]
+                       (let [server-id (swap! next-id inc)]
+                         (swap! state assoc server-id {:client-id id :msg m})
+                         (assoc m :id server-id))
+                       m))
+             (fn [res]
+               (if res
+                 (d/recur ms)
+                 false)))))))))
+
+(defn outgoing-client-callback [state client-stream msg-filter]
+  (fn [msg]
+    (let [msgs (if-not (seq? msg) [msg] msg)]
+      (d/loop [[m & ms] msgs]
+        (if-not m
+          true
+          (let [server-id (:id m)
+                client-msg (@state server-id)
+                client-id (:client-id client-msg)
+                filtered (msg-filter m (:msg client-msg))]
+            (if (and client-id filtered)
+              (d/chain
+               (s/put! client-stream (assoc filtered :id client-id))
+                       (fn [res]
+                         (if res
+                           (d/recur ms)
+                           false)))
+              (d/recur ms))))))))
+
 (defn new-client
   "client-stream should already have json serde attached"
   ([client-stream msg-filter]
@@ -126,31 +173,9 @@
                    ;;Incoming from the client
                    (s/on-closed client-stream close-consumer)
                    (s/connect-via client-stream
-                                  (fn [msg]
-                                    (let [msgs (if-not (seq? msg) [msg] msg)]
-                                      (->> msgs
-                                           (map (fn [m]
-                                                  (if-let [id (:id m)]
-                                                   (let [server-id (swap! next-id inc)]
-                                                     (swap! state assoc server-id id)
-                                                     (assoc m :id server-id))
-                                                   m)))
-                                           (s/put-all! out))))
+                                  (incoming-client-callback state out client-stream msg-filter)
                                   out)
                    ;; Outgoing from the event bus to the client
                    (s/connect-via in
-                                  (fn [msg]
-                                    (let [msgs (if-not (seq? msg) [msg] msg)]
-                                      (d/loop [[m & ms] msgs]
-                                        (if-not m
-                                          true
-                                          (let [server-id (:id m)
-                                                client-id (@state server-id)]
-                                            (if (and client-id (msg-filter m))
-                                              (d/chain (s/put! client-stream (assoc m :id client-id))
-                                                       (fn [res]
-                                                         (if res
-                                                           (d/recur ms)
-                                                           false)))
-                                              (d/recur ms)))))))
+                                  (outgoing-client-callback state client-stream msg-filter)
                                   client-stream))))))
