@@ -1,5 +1,6 @@
 (ns ha-proxy.client
   (:require
+   [ha-proxy.util :as util]
    [aleph.http :as h]
    [manifold.stream :as s]
    [manifold.deferred :as d]
@@ -8,21 +9,6 @@
 
 (def api-bus (bus/event-bus))
 
-(defn json-encoder-s [s]
-  (let [in (s/stream)]
-    (s/connect-via in
-                   (fn [m]
-                     (let [enc (generate-string m)]
-                       (println "Sending" m)
-                       (s/put! s enc)))
-                   s)
-    (s/sink-only in)))
-(defn json-decoder-s [s]
-  (s/map (fn [m]
-           (let [d (parse-string m true)]
-             (println "Decoded: " d)
-             d))
-         s))
 
 
 (defmulti handle-message :type)
@@ -41,7 +27,6 @@
   ::err)
 
 (defn auth [api-token conn]
-  (println "authing")
   (d/let-flow [authreq (s/take! conn)]
     (if-not authreq
       (throw (ex-info "no auth message" {}))
@@ -55,21 +40,22 @@
             ::authfailed (throw (ex-info "Invalid auth" {}))
             (throw ( ex-info "Unknown method" {:result res :msg authed}))))))))
 
+(defn trunc [s n]
+  (subs s 0 (min (count s) n)))
+
 (defn connect [url api-token]
+  (println "connecting to " url)
   (d/let-flow [conn (d/catch
-                        (h/websocket-client url)
+                        (h/websocket-client url {:max-frame-payload 1048576})
                         (fn [_] nil))
 
-               in (json-encoder-s conn)
-               out (json-decoder-s conn)
-               conn (s/splice in out)]
+               conn (util/json-stream conn)]
               (if-not conn
                 (throw (Exception.))
                 (->
-                 (d/let-flow [c conn
-                              res (auth api-token c)]
-                             (s/consume #(bus/publish! api-bus "api" %) c)
-                             c)
+                 (d/let-flow [res (auth api-token conn)]
+                             (s/consume #(bus/publish! api-bus "api" %) conn)
+                             conn)
                  (d/catch
                      (fn [err] (throw (Exception. err))))))))
 
@@ -85,70 +71,86 @@
                   :api-token api-token})))
 
 (defn add-consumer []
+  (println "adding consumer")
   (send current-connection
         (fn [conn]
           (let [conn (update conn :clients inc)]
             (if (:connection conn)
               conn
-              (assoc conn :connection @(connect (:url conn) (:api-token conn))))))))
+              @(->
+                (d/let-flow [server-conn (connect (:url conn) (:api-token conn))]
+                            (assoc conn :connection server-conn))
+                (d/catch (fn [err]
+                           (println "Error connecting to server")
+                           (assoc conn :connection nil)))))))))
 
 (defn close-consumer []
+  (println "closing consumer")
   (send current-connection
         (fn [conn]
           (let [conn (update conn :clients dec)]
-            (if (= 0 (:clients conn))
+            (if (>= 0 (:clients conn))
               (do
-                (s/close! (:connection conn))
+                (println "closing client connection")
+                (when-not (nil? (:connection conn)) (s/close! (:connection conn)))
                 (assoc conn :connection nil))
               conn)))))
-
-(defn filtered-consumer [cb]
-  (let [sub (bus/subscribe api-bus "api")
-        filtered (s/filter (fn [msg] (= :type "result")) sub)]
-    (s/consume cb sub)))
 
 (def ha_version "2022.12.1")
 
 (defn validate-client-auth [auth-msg]
-  (println auth-msg)
+  (println "Validating client")
   true)
 
 (defn client-auth [client-stream]
-  (d/let-flow [authreq (s/put! client-stream (generate-string {:type "auth_required" :ha_version ha_version}))
-               auth (s/take! client-stream)
-               auth-msg (parse-string auth true)]
-              (if-not (= (:type auth-msg "auth"))
+  (d/let-flow [authreq (s/put! client-stream {:type "auth_required" :ha_version ha_version})
+               auth (s/take! client-stream)]
+              (if-not (= (:type auth "auth"))
                 (throw (ex-info "client auth: expected 'auth' message" {}))
                 (if (validate-client-auth auth)
-                  (s/put! client-stream (generate-string {:type "auth_ok" :ha_version ha_version}))
-                  (s/put! client-stream (generate-string {:type "auth_invalid" :message "Nope"}))))))
+                  (s/put! client-stream {:type "auth_ok" :ha_version ha_version})
+                  (s/put! client-stream {:type "auth_invalid" :message "Nope"})))))
 
-;; TODO: add-consumer/close-consumer, cleanup
 (defn new-client
-  ([client-stream filter]
-   (new-client client-stream filter (:connection @current-connection) (bus/subscribe api-bus "api")))
-  ([client-stream filter out in]
+  "client-stream should already have json serde attached"
+  ([client-stream msg-filter]
+   (add-consumer)
+   (when-not (await-for 30000 current-connection)
+     (throw (ex-info "Timeout awaiting connection to server" {})))
+   (new-client client-stream msg-filter (:connection @current-connection) (bus/subscribe api-bus "api")))
+  ([client-stream msg-filter out in]
    (d/let-flow [res (client-auth client-stream)]
                (if-not res
-                 nil
+                 (do (println "failed auth") nil)
                  (let [state (atom {:req-map {}})]
                    ;;Incoming from the client
+                   (s/on-closed client-stream close-consumer)
                    (s/connect-via client-stream
                                   (fn [msg]
-                                    (s/put! out
-                                            (if-let [id (:id msg)]
-                                              (let [server-id (swap! next-id inc)]
-                                                (swap! state assoc server-id id)
-                                                (assoc msg :id server-id))
-                                              msg)))
+                                    (let [msgs (if-not (seq? msg) [msg] msg)]
+                                      (->> msgs
+                                           (map (fn [m]
+                                                  (if-let [id (:id m)]
+                                                   (let [server-id (swap! next-id inc)]
+                                                     (swap! state assoc server-id id)
+                                                     (assoc m :id server-id))
+                                                   m)))
+                                           (s/put-all! out))))
                                   out)
                    ;; Outgoing from the event bus to the client
                    (s/connect-via in
                                   (fn [msg]
-                                    (let [server-id (:id msg)
-                                          client-id (@state server-id)]
-                                      (if (and client-id (filter msg))
-                                        (s/put! client-stream
-                                                (assoc msg :id client-id))
-                                        (not (s/closed? client-stream)))))
+                                    (let [msgs (if-not (seq? msg) [msg] msg)]
+                                      (d/loop [[m & ms] msgs]
+                                        (if-not m
+                                          true
+                                          (let [server-id (:id m)
+                                                client-id (@state server-id)]
+                                            (if (and client-id (msg-filter m))
+                                              (d/chain (s/put! client-stream (assoc m :id client-id))
+                                                       (fn [res]
+                                                         (if res
+                                                           (d/recur ms)
+                                                           false)))
+                                              (d/recur ms)))))))
                                   client-stream))))))

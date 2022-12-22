@@ -4,12 +4,11 @@
         environ/environ {:mvn/version "1.2.0"}
         cheshire/cheshire {:mvn/version "5.11.0"}
         compojure/compojure {:mvn/version "1.7.0"}
-        ring/ring {:mvn/version "1.9.6"}}
+        ring/ring {:mvn/version "1.9.6"}
+        ring-logger/ring-logger {:mvn/version "1.1.1"}}
  :aliases
- {:run-m {:main-opts ["-m" "ha-proxy.main"]}
-  :run-x {:ns-default ha-proxy.main
-          :exec-fn greet
-          :exec-args {:name "Clojure"}}
+ {:run {:ns-default ha-proxy.server
+        :exec-fn main}
   :build {:deps {io.github.seancorfield/build-clj
                  {:git/tag "v0.6.3" :git/sha "9b8e09b"
                   ;; since we're building an app uberjar, we do not
