@@ -61,12 +61,15 @@
 (def next-id (atom 0))
 
 (defn init-connection [url api-token]
-  (send current-connection
-        (fn [_]  {:connection nil
-                  :clients 0
-                  :next-id 0
-                  :url url
-                  :api-token api-token})))
+  (let [initial {:connection nil
+                :clients 0
+                :next-id 0
+                :url url
+                :api-token api-token}]
+    (set-error-handler! current-connection
+                        (fn []
+                          (future (restart-agent current-connection initial))))
+    (send current-connection (constantly initial))))
 
 (defn add-consumer []
   (println "adding consumer")
