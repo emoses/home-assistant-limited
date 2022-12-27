@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html>
+    <head>
+        <title>Home Assistant Proxy</title>
+        <style>
+         html {
+             overflow: auto;
+         }
+
+         html, body, div, iframe {
+             margin: 0px;
+             padding: 0px;
+             height: 100%;
+             border: none;
+         }
+         iframe {
+             display: block;
+             width: 100%;
+             border: none;
+             overflow-y: auto;
+             overflow-x: hidden;
+         }
+        </style>
+    </head>
+    <body>
+        <script type="text/javascript">
+         window.externalApp = {
+             getExternalAuth: function(optsstr) {
+                 console.log('got external auth', optsstr)
+                 const opts = JSON.parse(optsstr)
+                 if (opts.callback) {
+                     document.getElementById('container').contentWindow[opts.callback](true, {
+                         access_token: "token:jeff",
+                         expires_in: 1000
+                     })
+                 }
+             }
+         }
+        </script>
+        <iframe id="container" src="/?external_auth=1"></iframe>
+    </body>
+</html>

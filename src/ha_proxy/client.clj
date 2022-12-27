@@ -62,13 +62,14 @@
 
 (defn init-connection [url api-token]
   (let [initial {:connection nil
-                :clients 0
-                :next-id 0
-                :url url
-                :api-token api-token}]
+                 :clients 0
+                 :next-id 0
+                 :url url
+                 :api-token api-token}]
+
     (set-error-handler! current-connection
-                        (fn []
-                          (future (restart-agent current-connection initial))))
+                        (fn [agt ex]
+                          (future (restart-agent agt initial))))
     (send current-connection (constantly initial))))
 
 (defn add-consumer []
@@ -99,16 +100,17 @@
 
 (def ha_version "2022.12.1")
 
-(defn validate-client-auth [auth-msg]
-  (println "Validating client")
-  true)
+(defn validate-client-auth [auth-msg expected-token]
+  (= (:access_token auth-msg) expected-token))
 
-(defn client-auth [client-stream]
-  (d/let-flow [authreq (s/put! client-stream {:type "auth_required" :ha_version ha_version})
+(defn client-auth [client-stream expected-token]
+  (d/let-flow [;authreq (s/put! client-stream {:type "auth_required" :ha_version ha_version})
                auth (s/take! client-stream)]
+              (println auth)
+
               (if-not (= (:type auth "auth"))
                 (throw (ex-info "client auth: expected 'auth' message" {}))
-                (if (validate-client-auth auth)
+                (if (validate-client-auth auth expected-token)
                   (s/put! client-stream {:type "auth_ok" :ha_version ha_version})
                   (s/put! client-stream {:type "auth_invalid" :message "Nope"})))))
 
@@ -163,13 +165,17 @@
 
 (defn new-client
   "client-stream should already have json serde attached"
-  ([client-stream msg-filter]
+  ([client-stream msg-filter authtoken]
    (add-consumer)
    (when-not (await-for 30000 current-connection)
      (throw (ex-info "Timeout awaiting connection to server" {})))
-   (new-client client-stream msg-filter (:connection @current-connection) (bus/subscribe api-bus "api")))
-  ([client-stream msg-filter out in]
-   (d/let-flow [res (client-auth client-stream)]
+   (new-client client-stream
+               msg-filter
+               authtoken
+               (:connection @current-connection)
+               (bus/subscribe api-bus "api")))
+  ([client-stream msg-filter authtoken out in]
+   (d/let-flow [res (client-auth client-stream authtoken)]
                (if-not res
                  (do (println "failed auth") nil)
                  (let [state (atom {:req-map {}})]
