@@ -32,42 +32,73 @@
 (def server-port (Integer/parseInt (env :port "8080")))
 (def server-name (env :server-name (str "http://localhost:" server-port)))
 
-(def auth-script-tag "<script>window.externalApp=parent?.window.externalApp</script>")
+(def auth-script-tag "<script>window.externalApp= {
+             getExternalAuth: function(optsstr) {
+                 const opts = JSON.parse(optsstr)
+                 if (opts.callback) {
+                     window[opts.callback](true, {
+                         access_token: 'token:jeff',
+                         expires_in: 1000
+                     })
+                 }
+             }
+}</script>")
 
 ;; From https://github.com/bertrandk/ring-gzip/blob/master/src/ring/middleware/gzip.clj
 (defn compress-body
-  [body]
+  [body constructor]
   (let [p-in (PipedInputStream.)
         p-out (PipedOutputStream. p-in)]
     (future
-      (with-open [out (java.util.zip.GZIPOutputStream. p-out)]
+      (with-open [out (constructor p-out)]
         (io/copy body out))
       (when (instance? Closeable body)
         (.close ^Closeable body)))
     p-in))
 
+(defn wrap-decompress [resp-filter]
+  (fn [resp]
+    (if-not (= (:status resp) 200)
+      (resp-filter resp)
+      (case (get-in resp [:headers "content-encoding"])
+        "gzip" (-> resp
+                   (update :body #(java.util.zip.GZIPInputStream. %))
+                   resp-filter
+                   (update :body (fn [body] (compress-body body #(java.util.zip.GZIPOutputStream. %)))))
+        "deflate" (-> resp
+                      (update :body #(java.util.zip.InflaterInputStream. %))
+                      resp-filter
+                      (update :body #(java.util.zip.DeflaterInputStream. %)))
+        (resp-filter resp)))))
+
 (defn inject-auth-script [resp]
   (if-not (= ( :status resp) 200)
     resp
-    ;;apparenlty gzip isn't applied for us?
-    (let [gzipped (= (get-in resp [:headers "content-encoding"]) "gzip")
-          input (if gzipped
-                  (java.util.zip.GZIPInputStream. (:body resp))
-                  (:body resp))
-          body (bs/convert input String)
-          [beg end] (split body #"<body>")
-          zipper (if gzipped compress-body identity)]
+    (let [body (bs/convert (:body resp) String)
+          [beg end] (split body #"<body>")]
       (println "split at" (count beg) (count end))
       (if-not (and beg end)
         resp
         (-> resp
             (assoc :body (-> (str beg "<body>" auth-script-tag end)
                              (.getBytes "UTF-8")
-                             (ByteArrayInputStream.)
-                             zipper)))))))
+                             (ByteArrayInputStream.))))))))
 
 (defn inject-auth-script-d [d-req]
-  (d/chain d-req inject-auth-script))
+  (d/chain d-req (wrap-decompress inject-auth-script)))
+
+(defn filter-accept-encoding [enc]
+  (when enc
+    (let [s (split enc #", ")]
+      (->>
+       s
+       (filter #(not (starts-with? % "br")))
+       (clojure.string/join ", ")))))
+
+(defn dissoc-if-nil [m key]
+  (if (nil? (m key))
+    (dissoc m key)
+    m))
 
 (defn proxy-req [request]
   (let [updated (-> request
@@ -75,7 +106,10 @@
                      :server-name proxy-target-base
                      :scheme (if proxy-target-https :https :http)
                      :server-port proxy-target-port
-                     :headers (assoc (:headers request) "host" proxy-target-base))
+                     :headers (-> (:headers request)
+                                  (assoc "host" proxy-target-base)
+                                  (update "accept-encoding" filter-accept-encoding)
+                                  (dissoc-if-nil "accept-encoding")))
                     (dissoc :remote-addr))]
     (d/catch
         (http/request updated)
@@ -161,18 +195,14 @@
 
 (defn proxy-with-auth-script [req]
   (let [resp (proxy-req req)]
-    (if (contains? (:params req) "external_auth")
-      (inject-auth-script-d resp)
-      resp)))
+    (inject-auth-script-d resp)))
 
 (defroutes proxy-routes
   (ANY "/logout" [] (logout-handler))
   (ANY "/api/websocket" req (websocket-handler req))
   (ANY "/api/*" req (resp/not-found req))
-  (wrap-params
-   (routes
-    (GET "/" req (proxy-with-auth-script req))
-    (GET "/lovelace" req (proxy-with-auth-script req))))
+  (GET "/" req (proxy-with-auth-script req))
+  (GET "/lovelace" req (proxy-with-auth-script req))
   (ANY "*" req (proxy-req req)))
 
 (defroutes unauthorized-routes
