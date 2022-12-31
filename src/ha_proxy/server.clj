@@ -1,4 +1,4 @@
-(n
+(ns ha-proxy.server
   (:gen-class)
   (:require
    [ha-proxy.client :as client]
@@ -32,17 +32,18 @@
 (def proxy-target-port (env :proxy-target-port 443))
 (def proxy-target-https (env :proxy-target-https true))
 
-(def auth-script-tag "<script>window.externalApp= {
+(defn auth-script-tag [token]
+  (format "<script>window.externalApp= {
              getExternalAuth: function(optsstr) {
                  const opts = JSON.parse(optsstr)
                  if (opts.callback) {
                      window[opts.callback](true, {
-                         access_token: 'token:jeff',
+                         access_token: '%s',
                          expires_in: 1000
                      })
                  }
              }
-}</script>")
+}</script>" token))
 
 (def raw-stream-connection-pool (http/connection-pool {:connection-options {:raw-stream? true}}))
 
@@ -73,21 +74,22 @@
                       (update :body #(java.util.zip.DeflaterInputStream. %)))
         (resp-filter resp)))))
 
-(defn inject-auth-script [resp]
-  (if-not (= ( :status resp) 200)
-    resp
-    (let [body (bs/convert (:body resp) String)
-          [beg end] (split body #"<body>")]
-      (println "split at" (count beg) (count end))
-      (if-not (and beg end)
-        resp
-        (-> resp
-            (assoc :body (-> (str beg "<body>" auth-script-tag end)
-                             (.getBytes "UTF-8")
-                             (ByteArrayInputStream.))))))))
+(defn inject-auth-script [token]
+  (fn [resp]
+    (if-not (= ( :status resp) 200)
+      resp
+      (let [body (bs/convert (:body resp) String)
+            [beg end] (split body #"<body>")]
+        (println "split at" (count beg) (count end))
+        (if-not (and beg end)
+          resp
+          (-> resp
+              (assoc :body (-> (str beg "<body>" (auth-script-tag token) end)
+                               (.getBytes "UTF-8")
+                               (ByteArrayInputStream.)))))))))
 
-(defn inject-auth-script-d [d-req]
-  (d/chain d-req (wrap-decompress inject-auth-script)))
+(defn inject-auth-script-d [d-req token]
+  (d/chain d-req (wrap-decompress ( inject-auth-script token))))
 
 (defn filter-accept-encoding [enc]
   (when enc
@@ -140,16 +142,14 @@
           (when-not res (log/warn "Denying outgoing (" (:type orig) ") " ))
           res))))
 
-(defn request-token [req]
-  (get-in req [:cookies "token" :value]))
-
 (defn websocket-handler [request]
   (let [userfilter (-> request
                        :user-id
                        user/lookup-user)]
+    (println "userid: " (:user-id request) userfilter)
     (->
      (d/let-flow [s (http/websocket-connection request {:max-frame-payload 1048576})]
-                 (client/new-client (json-stream s) (filter-for userfilter) (request-token request)))
+                 (client/new-client (json-stream s) (filter-for userfilter) (get-in request [:session :access-token])))
      (d/catch
          (fn [err]
            (println "handler err" err)
@@ -171,10 +171,10 @@
     (if-not (same-origin? req)
       (handler req)
       (let [wrapped
-            (if-let [userid (-> req
-                                request-token
-                                user/token->userid)]
-              (assoc req :user-id userid)
+            (if-let [userid (get-in req [:session :profile :email])]
+              (if (get-in req [:session :profile :email_verified])
+                (assoc req :user-id userid)
+                req)
               req)]
         (handler wrapped)))))
 
@@ -185,7 +185,7 @@
 
 (defn proxy-with-auth-script [req]
   (let [resp (proxy-req req {:raw? false})]
-    (inject-auth-script-d resp)))
+    (inject-auth-script-d resp (get-in req [:session :access-token]))))
 
 (defroutes proxy-routes
   (ANY "/logout" [] (logout-handler))
@@ -222,4 +222,4 @@
 (defn main [args]
   (init-client)
   (println "Starting Server...")
-  (http/start-server #'app {:port server-port}))
+  (http/start-server #'app {:port config/server-port}))

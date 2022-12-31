@@ -4,13 +4,6 @@
    [clojure.core.match :refer [match]]
    ))
 
-(defn token->userid [token]
-  (when (and (not (nil? token)) (starts-with? token "token:"))
-    (subs token (count "token:"))))
-
-(defn userid->token [userid]
-  (str "token:" userid))
-
 (defprotocol UserFilter
   (filter-incoming [user msg])
   (filter-outgoing [user msg orig]))
@@ -84,5 +77,5 @@
 
 (defn lookup-user [userid]
   (case userid
-    "jeff" Jeff
+    "evan@emoses.org" Jeff
     nil))

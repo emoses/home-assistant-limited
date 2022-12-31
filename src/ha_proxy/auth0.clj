@@ -1,12 +1,15 @@
 (ns ha-proxy.auth0
   (:require
    [ha-proxy.config :as config]
+   [ha-proxy.jws :as jws]
    [clojure.tools.logging :as log]
+   [clojure.java.io :as io]
    [clj-commons.byte-streams :as bs]
    [environ.core :refer [env]]
    [aleph.http :as http]
    [manifold.deferred :as d]
    [cheshire.core :refer :all]
+   [ring.middleware.token :as jwt]
    [ring.util.response :as resp]
    [ring.util.codec :refer [form-encode]])
   (:import
@@ -19,6 +22,7 @@
 (def auth0-clientsecret (env :auth0-clientsecret))
 
 (def redirect-uri (str config/server-name "/oauth2/callback"))
+(def jwks-uri (str "https://" auth0-domain "/.well-known/jwks.json"))
 
 (defn random-state []
   (let [rand (SecureRandom.)
@@ -53,8 +57,12 @@
         uri (auth-uri state)]
     (-> uri
         (resp/redirect)
-        (update :session assoc :login-state state)
-        (tee #(println "State: " state "session: " (:session %))))))
+        (update :headers merge {:cache-control "no-cache, no-store, must-revalidate"
+                                :expires "0"})
+        (update :session assoc :login-state state))))
+
+(defn validate-token [token]
+  (jws/decode-token token jwks-uri))
 
 (defn callback-handler [req]
   (let [{state "state" code "code"} (:params req)]
@@ -66,9 +74,10 @@
        (code-request code)
        (d/chain
         (fn [resp]
-          (println resp)
-          {:status 200
-           :body "Got callback"}))
+          (let [body (parse-stream (io/reader (:body resp)) true)
+                id-token (validate-token (:id_token body))]
+            (-> (resp/redirect "/lovelace")
+                (update :session assoc :profile id-token :access-token (:access_token body))))))
        (d/catch (fn [err]
                   (let [data  (ex-data err)]
                     (if data
