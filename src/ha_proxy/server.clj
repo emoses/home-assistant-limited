@@ -1,9 +1,11 @@
-(ns ha-proxy.server
+(n
   (:gen-class)
   (:require
    [ha-proxy.client :as client]
    [ha-proxy.util :refer [json-stream]]
    [ha-proxy.user :as user]
+   [ha-proxy.auth0 :as auth0]
+   [ha-proxy.config :as config]
    [environ.core :refer [env]]
    [aleph.http :as http]
    [clj-commons.byte-streams :as bs]
@@ -12,8 +14,9 @@
    [ring.util.response :as resp]
    [ring.util.request]
    [ring.middleware.resource :refer [wrap-resource]]
-   [ring.middleware.cookies :refer [wrap-cookies]]
    [ring.middleware.params :refer [wrap-params]]
+   [ring.middleware.session :refer [wrap-session]]
+   [ring.middleware.session.cookie :refer [cookie-store]]
    [clojure.tools.logging :as log]
    [clojure.string :refer [starts-with? split]]
    [hiccup.core :refer [html]]
@@ -29,9 +32,6 @@
 (def proxy-target-port (env :proxy-target-port 443))
 (def proxy-target-https (env :proxy-target-https true))
 
-(def server-port (Integer/parseInt (env :port "8080")))
-(def server-name (env :server-name (str "http://localhost:" server-port)))
-
 (def auth-script-tag "<script>window.externalApp= {
              getExternalAuth: function(optsstr) {
                  const opts = JSON.parse(optsstr)
@@ -43,6 +43,8 @@
                  }
              }
 }</script>")
+
+(def raw-stream-connection-pool (http/connection-pool {:connection-options {:raw-stream? true}}))
 
 ;; From https://github.com/bertrandk/ring-gzip/blob/master/src/ring/middleware/gzip.clj
 (defn compress-body
@@ -100,7 +102,12 @@
     (dissoc m key)
     m))
 
-(defn proxy-req [request]
+(defn assoc-if-v [m k v]
+  (if v
+    (assoc m k v)
+    m))
+
+(defn proxy-req [request & {:keys [raw?] :or {raw? true}}]
   (let [updated (-> request
                     (assoc
                      :server-name proxy-target-base
@@ -110,7 +117,8 @@
                                   (assoc "host" proxy-target-base)
                                   (update "accept-encoding" filter-accept-encoding)
                                   (dissoc-if-nil "accept-encoding")))
-                    (dissoc :remote-addr))]
+                    (dissoc :remote-addr)
+                    (assoc-if-v :pool (when raw? raw-stream-connection-pool)))]
     (d/catch
         (http/request updated)
         (fn [err]
@@ -155,7 +163,7 @@
   [req]
   (let [origin (get-in req [:headers "origin"])]
     (if origin
-      (= origin server-name)
+      (= origin config/server-name)
       true)))
 
 (defn wrap-user-id [handler]
@@ -170,31 +178,13 @@
               req)]
         (handler wrapped)))))
 
-(defn login-handler [req]
-  (html [:html
-         [:head
-          [:title "Login"]]
-         [:body
-          [:form {:action "/login" :method "POST"}
-           [:label {:for "username"} "Username"]
-           [:input#username {:type "text" :name "username"}]
-           [:input {:type "submit"} "Log in"]]]]))
-
 (defn logout-handler []
   (-> (resp/redirect "/")
       (assoc :cookies {"token" {:value ""
                                 :max-age 1}})))
 
-(defn do-login [username req]
-  (if username
-    (->
-     (resp/redirect "/")
-     (assoc :cookies {"token" {:value (user/userid->token username)
-                              :secure true}}))
-    (resp/bad-request "Invalid login request")))
-
 (defn proxy-with-auth-script [req]
-  (let [resp (proxy-req req)]
+  (let [resp (proxy-req req {:raw? false})]
     (inject-auth-script-d resp)))
 
 (defroutes proxy-routes
@@ -206,8 +196,8 @@
   (ANY "*" req (proxy-req req)))
 
 (defroutes unauthorized-routes
-  (GET "/login" req (login-handler req))
-  (wrap-params (POST "/login" [username :as req] (do-login username req))))
+  (GET "/login" req (auth0/login-handler req))
+  (GET "/oauth2/callback" req (auth0/callback-handler req)))
 
 (defn handler [request]
   (if-let [resp (unauthorized-routes request)]
@@ -225,7 +215,8 @@
   (-> #'handler
       (wrap-resource "public")
       (wrap-user-id)
-      (wrap-cookies)
+      (wrap-session {:store (cookie-store)}) ;;TODO: initialize with key
+      (wrap-params)
       (logger/wrap-with-logger)))
 
 (defn main [args]
