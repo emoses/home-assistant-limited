@@ -104,8 +104,10 @@
     (dissoc m key)
     m))
 
-(defn assoc-if-v [m k v]
-  (if v
+(defn assoc-if-v
+  "If v is non-nil, assoc it with k.  Otherwise no-op"
+  [m k v]
+  (if (not (nil? v))
     (assoc m k v)
     m))
 
@@ -152,7 +154,7 @@
                  (client/new-client (json-stream s) (filter-for userfilter) (get-in request [:session :access-token])))
      (d/catch
          (fn [err]
-           (println "handler err" err)
+           (log/error err "websocket handler err" )
            {:status 400
             :headers {"content-type" "application/text"}
             :body "Expected a websocket request."})))))
@@ -170,25 +172,19 @@
   (fn [req]
     (if-not (same-origin? req)
       (handler req)
-      (let [wrapped
-            (if-let [userid (get-in req [:session :profile :email])]
-              (if (get-in req [:session :profile :email_verified])
-                (assoc req :user-id userid)
-                req)
-              req)]
-        (handler wrapped)))))
+      (do (println (:session req))
+          (let [wrapped
+                (if-let [userid (get-in req [:session :profile :sub])]
+                  (assoc req :user-id userid)
+                  req)]
+            (handler wrapped))))))
 
-(defn logout-handler []
-  (-> (resp/redirect "/")
-      (assoc :cookies {"token" {:value ""
-                                :max-age 1}})))
 
 (defn proxy-with-auth-script [req]
   (let [resp (proxy-req req {:raw? false})]
     (inject-auth-script-d resp (get-in req [:session :access-token]))))
 
 (defroutes proxy-routes
-  (ANY "/logout" [] (logout-handler))
   (ANY "/api/websocket" req (websocket-handler req))
   (ANY "/api/*" req (resp/not-found req))
   (GET "/" req (proxy-with-auth-script req))
@@ -196,6 +192,7 @@
   (ANY "*" req (proxy-req req)))
 
 (defroutes unauthorized-routes
+  (ANY "/logout" req (auth0/logout-handler req))
   (GET "/login" req (auth0/login-handler req))
   (GET "/oauth2/callback" req (auth0/callback-handler req)))
 

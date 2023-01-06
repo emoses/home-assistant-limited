@@ -9,7 +9,6 @@
    [aleph.http :as http]
    [manifold.deferred :as d]
    [cheshire.core :refer :all]
-   [ring.middleware.token :as jwt]
    [ring.util.response :as resp]
    [ring.util.codec :refer [form-encode]])
   (:import
@@ -60,6 +59,18 @@
         (update :headers merge {:cache-control "no-cache, no-store, must-revalidate"
                                 :expires "0"})
         (update :session assoc :login-state state))))
+
+(defn clear-session [req]
+  (-> req
+      (assoc-in [:session :profile] nil)
+      (assoc-in [:session :access-token] nil)))
+
+(defn logout-handler [req]
+  (let [uri (str "https://" auth0-domain "/v2/logout")
+        uri (str uri "?" (form-encode {"returnTo" (str config/server-name "/")
+                                       "client_id" auth0-clientid}))]
+    (-> (resp/redirect uri)
+        (clear-session))))
 
 (defn validate-token [token]
   (jws/decode-token token jwks-uri))
