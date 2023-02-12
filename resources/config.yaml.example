@@ -1,0 +1,8 @@
+users:
+  "some user id":
+    entities:
+      - light.entry_lights
+    readonly_entities:
+      - binary_sensor.outside_door
+    sidebar:
+      - lovelace-limited
