@@ -9,10 +9,12 @@
 (def config-file-name "config.yaml")
 
 (defn load-config []
-  (-> config-file-name
-      io/resource
-      io/reader
-      yaml/parse-stream))
+  (let [res (-> config-file-name io/resource)]
+    (if-not res
+      (throw (Exception. (str "No config file found at " config-file-name)))
+      (-> res
+          io/reader
+          yaml/parse-stream))))
 
 (def config (atom (load-config)))
 

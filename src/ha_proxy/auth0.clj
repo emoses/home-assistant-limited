@@ -20,6 +20,11 @@
 (def auth0-clientid (env :auth0-clientid))
 (def auth0-clientsecret (env :auth0-clientsecret))
 
+(defn env-valid? []
+  (and auth0-domain
+       auth0-clientid
+       auth0-clientsecret))
+
 (def redirect-uri (str config/server-name "/oauth2/callback"))
 (def jwks-uri (str "https://" auth0-domain "/.well-known/jwks.json"))
 
@@ -62,8 +67,7 @@
 
 (defn clear-session [req]
   (-> req
-      (assoc-in [:session :profile] nil)
-      (assoc-in [:session :access-token] nil)))
+      (assoc :session {})))
 
 (defn logout-handler [req]
   (let [uri (str "https://" auth0-domain "/v2/logout")

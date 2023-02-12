@@ -172,12 +172,11 @@
   (fn [req]
     (if-not (same-origin? req)
       (handler req)
-      (do (println (:session req))
-          (let [wrapped
-                (if-let [userid (get-in req [:session :profile :sub])]
-                  (assoc req :user-id userid)
-                  req)]
-            (handler wrapped))))))
+      (let [wrapped
+            (if-let [userid (get-in req [:session :profile :sub])]
+              (assoc req :user-id userid)
+              req)]
+        (handler wrapped)))))
 
 
 (defn proxy-with-auth-script [req]
@@ -218,5 +217,7 @@
 
 (defn main [args]
   (init-client)
+  (when-not (auth0/env-valid?)
+    (throw (Exception. "auth0 environment variables not present")))
   (println "Starting Server...")
   (http/start-server #'app {:port config/server-port}))
