@@ -81,7 +81,7 @@
       resp
       (let [body (bs/convert (:body resp) String)
             [beg end] (split body #"<body>")]
-        (log/info (str "split at " (count beg) " " (count end)))
+        (log/debug (str "split at " (count beg) " " (count end)))
         (if-not (and beg end)
           resp
           (-> resp
@@ -222,7 +222,8 @@
 ;; these routes redirect to login if you try to access them without a userid
 (defroutes proxy-routes
   (GET "/" req (proxy-with-auth-script req))
-  (GET "/lovelace" req (proxy-with-auth-script req)))
+  (GET "/lovelace" req (proxy-with-auth-script req))
+  (GET "/lovelace-*" req (proxy-with-auth-script req)))
 
 (defroutes unauthorized-routes
   (ANY "/auth/logout" req (auth0/logout-handler req))
@@ -251,7 +252,7 @@
       (wrap-params)
       (logger/wrap-with-logger)))
 
-(defn main [args]
+(defn -main []
   (init-client)
   (when-not (auth0/env-valid?)
     (throw (Exception. "auth0 environment variables not present")))

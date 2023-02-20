@@ -2,6 +2,7 @@
   (:require
    [ha-proxy.config :as config]
    [ha-proxy.jws :as jws]
+   [ha-proxy.user :as user]
    [clojure.tools.logging :as log]
    [clojure.java.io :as io]
    [clj-commons.byte-streams :as bs]
@@ -84,7 +85,7 @@
 
 (defn callback-handler [req]
   (let [{state "state" code "code"} (:params req)]
-    (log/info {:state state
+    (log/debug {:state state
                :server-state (get-in req [:session :login-state])})
     (if-not (and state (= state (get-in req [:session :login-state])))
       (resp/bad-request "Invalid state in oauth response")
@@ -93,8 +94,10 @@
        (d/chain
         (fn [resp]
           (let [body (parse-stream (io/reader (:body resp)) true)
-                id-token (validate-token (:id_token body))]
-            (-> (resp/redirect "/lovelace")
+                id-token (validate-token (:id_token body))
+                user (user/lookup-user (:sub id-token))
+                landing (or (:landing user) "/lovelace")]
+            (-> (resp/redirect landing)
                 (update :session assoc :profile id-token :access-token (:access_token body))
                 (update :session dissoc :login-state)))))
        (d/catch (fn [err]
