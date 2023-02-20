@@ -25,7 +25,7 @@
        auth0-clientid
        auth0-clientsecret))
 
-(def redirect-uri (str config/server-name "/oauth2/callback"))
+(def redirect-uri (str config/server-name "/auth/oauth2/callback"))
 (def jwks-uri (str "https://" auth0-domain "/.well-known/jwks.json"))
 
 (defn random-state []
@@ -57,17 +57,20 @@
   v)
 
 (defn login-handler [req]
-  (let [state (random-state)
-        uri (auth-uri state)]
-    (-> uri
-        (resp/redirect)
-        (update :headers merge {:cache-control "no-cache, no-store, must-revalidate"
-                                :expires "0"})
-        (update :session assoc :login-state state))))
+  (if (:user-id req)
+    (resp/redirect "/lovelace")
+    (let [state (random-state)
+          uri (auth-uri state)]
+      (println "Login handler, state=" state)
+      (-> uri
+          (resp/redirect)
+          (update :headers merge {:cache-control "no-cache, no-store, must-revalidate"
+                                  :expires "0"})
+          (update :session assoc :login-state state)))))
 
 (defn clear-session [req]
   (-> req
-      (assoc :session {})))
+      (assoc :session nil)))
 
 (defn logout-handler [req]
   (let [uri (str "https://" auth0-domain "/v2/logout")
@@ -92,7 +95,8 @@
           (let [body (parse-stream (io/reader (:body resp)) true)
                 id-token (validate-token (:id_token body))]
             (-> (resp/redirect "/lovelace")
-                (update :session assoc :profile id-token :access-token (:access_token body))))))
+                (update :session assoc :profile id-token :access-token (:access_token body))
+                (update :session dissoc :login-state)))))
        (d/catch (fn [err]
                   (let [data  (ex-data err)]
                     (if data

@@ -2,6 +2,8 @@
   (:require
    [ha-proxy.util :as util]
    [aleph.http :as h]
+   [clojure.tools.logging :as log]
+   [clojure.pprint :refer [cl-format]]
    [manifold.stream :as s]
    [manifold.deferred :as d]
    [manifold.bus :as bus]
@@ -21,7 +23,7 @@
   ::authfailed)
 
 (defmethod handle-auth-message nil [msg]
-  (println "Unexpected message with no type "msg)
+  (println "Unexpected message with no type " msg)
   ::err)
 
 (defn auth [api-token conn]
@@ -42,11 +44,10 @@
   (subs s 0 (min (count s) n)))
 
 (defn connect [url api-token]
-  (println "connecting to " url)
+  (log/info (str "connecting to " url))
   (d/let-flow [conn (d/catch
                         (h/websocket-client url {:max-frame-payload 1048576})
                         (fn [_] nil))
-
                conn (util/json-stream conn)]
               (if-not conn
                 (throw (Exception. "Unable to connect to server"))
@@ -55,7 +56,9 @@
                              (s/consume #(bus/publish! api-bus "api" %) conn)
                              conn)
                  (d/catch
-                     (fn [err] (throw (Exception. err))))))))
+                     (fn [err]
+                       (log/error err "Unable to connect to" url)
+                       (throw (Exception. err))))))))
 
 (def current-connection (agent {}))
 (def next-id (atom 0))
@@ -65,35 +68,38 @@
                  :clients 0
                  :next-id 0
                  :url url
-                 :api-token api-token}]
-
-    (set-error-handler! current-connection
-                        (fn [agt ex]
-                          (future (restart-agent agt initial))))
+                 :api-token api-token}
+        error-handler (fn [agt ex]
+                          (log/error ex "current-connection error, restarting")
+                          (future (restart-agent agt initial)
+                                  (set-error-handler! current-connection error-handler)))]
+    (set-error-handler! current-connection error-handler)
     (send current-connection (constantly initial))))
 
 (defn add-consumer []
-  (println "adding consumer")
+  (log/debug "Adding consumer")
   (send current-connection
         (fn [conn]
-          (let [conn (update conn :clients inc)]
-            (if (:connection conn)
-              conn
+          (log/debug (cl-format nil "Add consumer, executing.  Conn: ~A" conn))
+          (let [server-conn (:connection conn)]
+            (if (and server-conn (not (s/closed? server-conn)))
+              (update conn :clients inc)
               @(->
-                (d/let-flow [server-conn (connect (:url conn) (:api-token conn))]
-                            (assoc conn :connection server-conn))
+                (d/let-flow [new-server-conn (connect (:url conn) (:api-token conn))]
+                            (assoc conn :connection new-server-conn :clients 1))
                 (d/catch (fn [err]
-                           (println "Error connecting to server")
-                           (assoc conn :connection nil)))))))))
+                           (log/error err "Error connecting to server")
+                           (assoc conn :connection nil :clients 0)))))))))
 
 (defn close-consumer []
-  (println "closing consumer")
+  (log/debug "Closing consumer")
   (send current-connection
         (fn [conn]
+          (log/debug (cl-format nil "close-consumer executing, conn: ~A" conn))
           (let [conn (update conn :clients dec)]
             (if (>= 0 (:clients conn))
               (do
-                (println "closing client connection")
+                (log/debug "Closing client connection")
                 (when-not (nil? (:connection conn)) (s/close! (:connection conn)))
                 (assoc conn :connection nil))
               conn)))))
@@ -106,13 +112,13 @@
 (defn client-auth [client-stream expected-token]
   (d/let-flow [;authreq (s/put! client-stream {:type "auth_required" :ha_version ha_version})
                auth (s/take! client-stream)]
-              (println auth)
-
               (if-not (= (:type auth "auth"))
                 (throw (ex-info "client auth: expected 'auth' message" {}))
-                (if (validate-client-auth auth expected-token)
-                  (s/put! client-stream {:type "auth_ok" :ha_version ha_version})
-                  (s/put! client-stream {:type "auth_invalid" :message "Nope"})))))
+                (let [auth-valid (validate-client-auth auth expected-token)]
+                  (log/debug (str "Valditating websocket auth, valid=" auth-valid))
+                  (if auth-valid
+                    (s/put! client-stream {:type "auth_ok" :ha_version ha_version})
+                    (s/put! client-stream {:type "auth_invalid" :message "Nope"}))))))
 
 (defn incoming-client-callback [state out client-stream msg-filter]
   (fn [msg]
@@ -155,12 +161,13 @@
                 client-id (:client-id client-msg)
                 filtered (msg-filter m (:msg client-msg))]
             (if (and client-id filtered)
-              (d/chain
+              (->
                (s/put! client-stream (assoc filtered :id client-id))
-                       (fn [res]
-                         (if res
-                           (d/recur ms)
-                           false)))
+               (d/chain (fn [res]
+                          (if res
+                            (d/recur ms)
+                            false)))
+               (d/catch #(log/error %1 "Exception in outgoing")))
               (d/recur ms))))))))
 
 (defn new-client
@@ -175,16 +182,20 @@
                (:connection @current-connection)
                (bus/subscribe api-bus "api")))
   ([client-stream msg-filter authtoken out in]
-   (d/let-flow [res (client-auth client-stream authtoken)]
-               (if-not res
-                 (do (println "failed auth") nil)
-                 (let [state (atom {:req-map {}})]
-                   ;;Incoming from the client
-                   (s/on-closed client-stream close-consumer)
-                   (s/connect-via client-stream
-                                  (incoming-client-callback state out client-stream msg-filter)
-                                  out)
-                   ;; Outgoing from the event bus to the client
-                   (s/connect-via in
-                                  (outgoing-client-callback state client-stream msg-filter)
-                                  client-stream))))))
+   (->
+    (d/let-flow [res (client-auth client-stream authtoken)]
+                (if-not res
+                  (do (log/info "Client failed valdiation") nil)
+                  (let [state (atom {:req-map {}})]
+                    ;;Incoming from the client
+                    (s/on-closed client-stream close-consumer)
+                    (s/connect-via client-stream
+                                   (incoming-client-callback state out client-stream msg-filter)
+                                   out)
+                    ;; Outgoing from the event bus to the client
+                    (s/connect-via in
+                                   (outgoing-client-callback state client-stream msg-filter)
+                                   client-stream))))
+    (d/catch
+        (fn [ex]
+          (log/error ex "Error creating client"))))))

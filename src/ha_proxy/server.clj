@@ -6,6 +6,7 @@
    [ha-proxy.user :as user]
    [ha-proxy.auth0 :as auth0]
    [ha-proxy.config :as config]
+   [ha-proxy.session :as sql-session]
    [environ.core :refer [env]]
    [aleph.http :as http]
    [clj-commons.byte-streams :as bs]
@@ -80,7 +81,7 @@
       resp
       (let [body (bs/convert (:body resp) String)
             [beg end] (split body #"<body>")]
-        (println "split at" (count beg) (count end))
+        (log/info (str "split at " (count beg) " " (count end)))
         (if-not (and beg end)
           resp
           (-> resp
@@ -148,9 +149,11 @@
   (let [userfilter (-> request
                        :user-id
                        user/lookup-user)]
-    (println "userid: " (:user-id request) userfilter)
+    (log/debug (str "userid: " (:user-id request) userfilter))
     (->
-     (d/let-flow [s (http/websocket-connection request {:max-frame-payload 1048576})]
+     (d/let-flow [s (http/websocket-connection request {:max-frame-payload 1048576
+                                                        :heartbeats {:send-after-idle 5000
+                                                                     :timeout 1000}})]
                  (client/new-client (json-stream s) (filter-for userfilter) (get-in request [:session :access-token])))
      (d/catch
          (fn [err]
@@ -165,7 +168,8 @@
   [req]
   (let [origin (get-in req [:headers "origin"])]
     (if origin
-      (= origin config/server-name)
+      (do (log/debug (str "checking Origin: " origin))
+          (= origin config/server-name))
       true)))
 
 (defn wrap-user-id [handler]
@@ -178,40 +182,72 @@
               req)]
         (handler wrapped)))))
 
+(defn wrap-redirect-if-no-user [handler]
+  (fn [req]
+    (if-not (:user-id req)
+      (resp/redirect "/auth/login")
+      (handler req))))
+
+(defn wrap-error-if-no-user [handler]
+  (fn [req]
+    (if-not (:user-id req)
+      {:status 401
+       :headers {}
+       :body "Not authorized"}
+      (handler req))))
+
 
 (defn proxy-with-auth-script [req]
   (let [resp (proxy-req req {:raw? false})]
     (inject-auth-script-d resp (get-in req [:session :access-token]))))
 
-(defroutes proxy-routes
+#_(defn login-page [req]
+  (-> (html [:html
+             [:head
+              [:title "Login"]]
+             [:body
+              [:form {:action "/login"
+                      :method "POST"}
+               [:input {:type "submit"
+                        :value "Login"}]]]])
+       resp/response
+       (resp/content-type "text/html")))
+
+;; these routes 401 if you try to access them without a userid
+(defroutes api-routes
   (ANY "/api/websocket" req (websocket-handler req))
   (ANY "/api/*" req (resp/not-found req))
-  (GET "/" req (proxy-with-auth-script req))
-  (GET "/lovelace" req (proxy-with-auth-script req))
   (ANY "*" req (proxy-req req)))
 
+;; these routes redirect to login if you try to access them without a userid
+(defroutes proxy-routes
+  (GET "/" req (proxy-with-auth-script req))
+  (GET "/lovelace" req (proxy-with-auth-script req)))
+
 (defroutes unauthorized-routes
-  (ANY "/logout" req (auth0/logout-handler req))
-  (GET "/login" req (auth0/login-handler req))
-  (GET "/oauth2/callback" req (auth0/callback-handler req)))
+  (ANY "/auth/logout" req (auth0/logout-handler req))
+  (GET "/auth/login" req (auth0/login-handler req))
+  (GET "/auth/oauth2/callback" req (auth0/callback-handler req)))
+
+(def all-routes
+  (routes
+   unauthorized-routes
+   (wrap-routes proxy-routes wrap-redirect-if-no-user)
+   (wrap-routes api-routes wrap-error-if-no-user)))
 
 (defn handler [request]
-  (if-let [resp (unauthorized-routes request)]
-    resp
-    (if-not (:user-id request)
-      (resp/redirect "/login")
-      (proxy-routes request))))
+  (all-routes request))
 
 (defn init-client []
   (let [ws (str "ws" (when proxy-target-https "s") "://" proxy-target-base "/api/websocket")]
-    (println "Initializing ws target at " ws)
+    (log/info (format "Initializing ws target at %s" ws))
     (client/init-connection ws (env :api-key))))
 
 (def app
   (-> #'handler
       (wrap-resource "public")
       (wrap-user-id)
-      (wrap-session {:store (cookie-store)}) ;;TODO: initialize with key
+      (wrap-session {:store (sql-session/session-store)})
       (wrap-params)
       (logger/wrap-with-logger)))
 
@@ -219,5 +255,5 @@
   (init-client)
   (when-not (auth0/env-valid?)
     (throw (Exception. "auth0 environment variables not present")))
-  (println "Starting Server...")
+  (log/info "Starting Server...")
   (http/start-server #'app {:port config/server-port}))
