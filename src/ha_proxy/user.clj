@@ -110,8 +110,9 @@
              [{:type "config/area_registry/list"} {:type "result"}] msg
              :else nil))))
 
-(defn config->User [userid {:keys [entities readonly_entities sidebar] :as user-config}]
-  (User. userid {:entities (reduce add-entity {} (concat entities readonly_entities))
+(defn config->User [userid {:keys [entities readonly_entities sidebar landing] :as user-config}]
+  (User. userid {:landing landing
+                 :entities (reduce add-entity {} (concat entities readonly_entities))
                  :services []
                  :sidebar sidebar}))
 

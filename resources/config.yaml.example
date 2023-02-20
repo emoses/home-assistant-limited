@@ -1,5 +1,6 @@
 users:
   "some user id":
+    landing: "/lovelace-my-view"
     entities:
       - light.entry_lights
     readonly_entities:

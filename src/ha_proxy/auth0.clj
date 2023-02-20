@@ -96,7 +96,8 @@
           (let [body (parse-stream (io/reader (:body resp)) true)
                 id-token (validate-token (:id_token body))
                 user (user/lookup-user (:sub id-token))
-                landing (or (:landing user) "/lovelace")]
+                ;; TODO, this isn't really the place for this, it should probably be passed in as a callback
+                landing (get-in user [:config :landing] "/lovelace")]
             (-> (resp/redirect landing)
                 (update :session assoc :profile id-token :access-token (:access_token body))
                 (update :session dissoc :login-state)))))

@@ -22,7 +22,8 @@
    [clojure.string :refer [starts-with? split]]
    [hiccup.core :refer [html]]
    [compojure.core :refer :all]
-   [clojure.java.io :as io])
+   [clojure.java.io :as io]
+   [clojure.pprint :refer [cl-format]])
   (:import (java.io PipedInputStream
                     PipedOutputStream
                     Closeable
@@ -219,6 +220,17 @@
   (ANY "/api/*" req (resp/not-found req))
   (ANY "*" req (proxy-req req)))
 
+(defn redirect-to-landing [handler]
+  (fn [{:keys [user-id uri] :as req}]
+    (if user-id
+      (let [landing (-> user-id
+                        (user/lookup-user)
+                        (get-in [:config :landing] "/lovelace"))]
+        (if (not= landing uri)
+          (resp/redirect landing)
+          (handler req)))
+      (handler req))))
+
 ;; these routes redirect to login if you try to access them without a userid
 (defroutes proxy-routes
   (GET "/" req (proxy-with-auth-script req))
@@ -233,7 +245,10 @@
 (def all-routes
   (routes
    unauthorized-routes
-   (wrap-routes proxy-routes wrap-redirect-if-no-user)
+   (->
+    proxy-routes
+    (wrap-routes redirect-to-landing)
+    (wrap-routes wrap-redirect-if-no-user))
    (wrap-routes api-routes wrap-error-if-no-user)))
 
 (defn handler [request]

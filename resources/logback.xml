@@ -7,5 +7,5 @@
   <root level="INFO">
     <appender-ref ref="STDOUT" />
   </root>
-  <logger name="ha-proxy" level="DEBUG" />
+  <!--<logger name="ha-proxy" level="DEBUG" />-->
 </configuration>

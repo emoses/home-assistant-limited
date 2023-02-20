@@ -60,7 +60,8 @@
                        (log/error err "Unable to connect to" url)
                        (throw (Exception. err))))))))
 
-(def current-connection (agent {}))
+;; defonce so we can reload this file in the repl without blowing away the connection
+(defonce current-connection (agent {}))
 (def next-id (atom 0))
 
 (defn init-connection [url api-token]
