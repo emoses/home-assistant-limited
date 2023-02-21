@@ -6,10 +6,15 @@
    ))
 
 (defprotocol UserFilter
-  (filter-incoming [user msg])
-  (filter-outgoing [user msg orig]))
+  (filter-incoming [user msg]
+    "Returns true if the message is allowed and false if it should be blocked.")
+  (filter-outgoing [user msg orig]
+    "Takes in a message, and the original message it's in response to, if applicable"))
 
-(defn services-for [domain]
+(defn services-for
+  "The valid services for a given domain.
+  TODO: add lots more"
+  [domain]
   (case domain
       "light" ["turn_on" "turn_off" "toggle"]
       "switch" ["turn_on" "turn_off" "toggle"]
@@ -22,7 +27,8 @@
   (let [[domain eid] (s/split entity #"\.")]
     (update entities domain set-conj eid)))
 
-(def sample-config
+;; This is what a config looks like once it's compiled by config->User
+#_(def sample-config
   {:entities
    {"light" #{"entry_lights"}
     "script" #{"buzz_front_door"}}
