@@ -30,7 +30,7 @@
                     ByteArrayInputStream)))
 
 
-(def proxy-target-base (env :proxy-target "hass.coopermoses.com"))
+(def proxy-target-base (env :proxy-target))
 (def proxy-target-port (env :proxy-target-port 443))
 (def proxy-target-https (env :proxy-target-https true))
 
@@ -143,7 +143,7 @@
        res))
     ([msg orig]
      (let [res (user/filter-outgoing user msg orig)]
-          (when-not res (log/warn "Denying outgoing (" (:type orig) ") " ))
+          (when-not res (log/debug "Denying outgoing (" (:type orig) ") " ))
           res))))
 
 (defn websocket-handler [request]
