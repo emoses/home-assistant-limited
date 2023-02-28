@@ -128,6 +128,7 @@
     (d/catch
         (http/request updated)
         (fn [err]
+          (log/error err "Error proxying request" updated)
           (if-let [data (ex-data err)]
             (if-let [status (:status data)]
               data
