@@ -272,5 +272,6 @@
   (init-client)
   (when-not (auth0/env-valid?)
     (throw (Exception. "auth0 environment variables not present")))
-  (log/info "Starting Server...")
+  (log/info "Starting Server " (str config/server-name ":" config/server-port))
+  (log/info "proxying to" (str (if proxy-target-https "https://" "http://") proxy-target-base ":" proxy-target-port))
   (http/start-server #'app {:port config/server-port}))
