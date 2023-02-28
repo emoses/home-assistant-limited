@@ -7,7 +7,7 @@
 
 (defprotocol UserFilter
   (filter-incoming [user msg]
-    "Returns true if the message is allowed and false if it should be blocked.")
+    "Returns truthy if the message is allowed and false if it should be blocked.")
   (filter-outgoing [user msg orig]
     "Takes in a message, and the original message it's in response to, if applicable"))
 
@@ -18,7 +18,8 @@
   (case domain
       "light" ["turn_on" "turn_off" "toggle"]
       "switch" ["turn_on" "turn_off" "toggle"]
-      "script" ["turn_on"]))
+      "script" ["turn_on"]
+      nil))
 
 (defn set-conj [coll v]
   (conj (or coll (hash-set)) v))
