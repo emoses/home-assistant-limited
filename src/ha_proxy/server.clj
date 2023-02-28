@@ -139,7 +139,7 @@
     ([msg]
      ;; incoming from client
      (let [res (user/filter-incoming user msg)]
-       (when-not res (log/warn "Denying incoming" (:type msg)))
+       (when-not res (log/debug "Denying incoming" (:type msg)))
        res))
     ([msg orig]
      (let [res (user/filter-outgoing user msg orig)]
