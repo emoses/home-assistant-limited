@@ -29,6 +29,7 @@ There are a number of required paramters that are needed to run the server succe
  :proxy-target-port  443                             ;optional, default 443
  :proxy-target-https true                            ;optional, default true
  :server-name        "https://server.name.example"   ;defaults to "http://localhost:port"
+ :config-file-path   "/path/to/config.yaml"          ;defaults to "/etc/home-assistant-limited/config.yaml
  :port               8080}
 ```
 These are parsed via `environ` and may be set using env vars in `SCREAMING_SNAKE_CASE` (e.g. `API_KEY`, `AUTH0_DOMAIN`, etc)
@@ -57,7 +58,7 @@ Build a multiarch docker image and push it to a repository (this requires docker
 
 ## Configuration/access control
 
-Configuration is in `resources/config.yaml`. There's an example config file at `resources/config.yaml.example`.
+Configuration is in a `config.yaml`.  The path is specified in your .lein-env at `:config-file-path` or the `CONFIG_FILE_PATH` environment variable, and defaults to `/etc/home-assistant-limited/config.yaml`. There's an example config file at `resources/config.yaml.example`.
 
 ```yaml
 users:
@@ -72,6 +73,31 @@ users:
     sidebar:
       - lovelace-name
       - lovelace # include this to include the default Overview
+```
+
+## Running with docker
+
+Here's a sample `docker-compose.yaml`
+
+```yaml
+version: '3.7'
+services:
+  ha-proxy:
+    image: emoses/ha-proxy:latest
+    restart: always
+    environment:
+      - API_KEY=VERYSECRET
+      - AUTH0_DOMAIN=mydomain.us.auth0.com
+      - AUTH0_CLIENTID=CLIENTID
+      - AUTH0_CLIENTSECRET=ALSOVERYSECRET
+      - SERVER_NAME=https://just-a-little.myhomeasssistant.example
+      - PROXY_TARGET=real.myhomeassistant.example
+      - PORT=8080
+      - CONFIG_FILE_PATH=/config/config/yaml
+    ports:
+      - 9090:8080/tcp
+    volumes:
+      - ./config/config.yaml:/config/config.yaml:ro
 ```
 
 ## How it works

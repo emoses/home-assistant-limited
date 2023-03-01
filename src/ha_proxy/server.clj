@@ -192,7 +192,7 @@
 
 (defn wrap-error-if-no-user [handler]
   (fn [req]
-    (if-not (:user-id req)
+    (if-not (some-> req :user-id user/lookup-user)
       {:status 401
        :headers {}
        :body "Not authorized"}
@@ -203,17 +203,15 @@
   (let [resp (proxy-req req {:raw? false})]
     (inject-auth-script-d resp (get-in req [:session :access-token]))))
 
-#_(defn login-page [req]
+(defn not-auth-page []
   (-> (html [:html
              [:head
-              [:title "Login"]]
+              [:title "Not authorized"]]
              [:body
-              [:form {:action "/login"
-                      :method "POST"}
-               [:input {:type "submit"
-                        :value "Login"}]]]])
-       resp/response
-       (resp/content-type "text/html")))
+              [:h1 "Not authorized"]]])
+      resp/response
+      (resp/content-type "text/html")
+      (resp/status 401)))
 
 ;; these routes 401 if you try to access them without a userid
 (defroutes api-routes
@@ -224,12 +222,11 @@
 (defn redirect-to-landing [handler]
   (fn [{:keys [user-id uri] :as req}]
     (if user-id
-      (let [landing (-> user-id
-                        (user/lookup-user)
-                        (get-in [:config :landing] "/lovelace"))]
+      (let [user (user/lookup-user user-id)
+            landing (get-in user [:config :landing] "/lovelace")]
         (if (not= landing uri)
-          (resp/redirect landing)
-          (handler req)))
+           (resp/redirect landing)
+           (handler req)))
       (handler req))))
 
 ;; these routes redirect to login if you try to access them without a userid
@@ -239,6 +236,7 @@
   (GET "/lovelace-*" req (proxy-with-auth-script req)))
 
 (defroutes unauthorized-routes
+  (GET "/auth/not-authorized" [] (not-auth-page))
   (ANY "/auth/logout" req (auth0/logout-handler req))
   (GET "/auth/login" req (auth0/login-handler req))
   (GET "/auth/oauth2/callback" req (auth0/callback-handler req)))

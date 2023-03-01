@@ -96,11 +96,14 @@
           (let [body (parse-stream (io/reader (:body resp)) true)
                 id-token (validate-token (:id_token body))
                 user (user/lookup-user (:sub id-token))
-                ;; TODO, this isn't really the place for this, it should probably be passed in as a callback
-                landing (get-in user [:config :landing] "/lovelace")]
-            (-> (resp/redirect landing)
-                (update :session assoc :profile id-token :access-token (:access_token body))
-                (update :session dissoc :login-state)))))
+                ]
+            (if-not user
+              (resp/redirect "/auth/not-authorized")
+              (-> (get-in user [:config :landing] "/lovelace")
+                  ;; TODO, this isn't really the place for the landing lookup, it should probably be passed in as a callback
+                  (resp/redirect)
+                  (update :session assoc :profile id-token :access-token (:access_token body))
+                  (update :session dissoc :login-state))))))
        (d/catch (fn [err]
                   (let [data  (ex-data err)]
                     (if data
